@@ -5,17 +5,16 @@ on:
     branches: [ "deploy" ]
     paths:
       - "init-db/**"
-      - "deployment/docker-compose.db.yml"
       - ".github/workflows/deploy-database.yml"
   workflow_dispatch:
 
 env:
   AWS_REGION: us-east-1
-  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  CLUSTER_NAME: cluster-proyecto-ep3
 
 jobs:
-  build-and-push-db:
-    name: Construir y Subir DBs a ECR
+  build-push-deploy-db:
+    name: Construir, Subir y Desplegar DBs en EKS
     runs-on: ubuntu-latest
     steps:
     - name: Descargar Código
@@ -38,82 +37,18 @@ jobs:
         REGISTRY=${{ steps.login-ecr.outputs.registry }}
         
         # Build y Push DB Ventas
-        docker build -f ./init-db/Dockerfile.ventas -t $REGISTRY/proyecto-db-ventas:latest ./init-db
-        docker push $REGISTRY/proyecto-db-ventas:latest
+        docker build -f ./init-db/Dockerfile.ventas -t $REGISTRY/ep3-db-ventas:latest ./init-db
+        docker push $REGISTRY/ep3-db-ventas:latest
         
         # Build y Push DB Despachos
-        docker build -f ./init-db/Dockerfile.despachos -t $REGISTRY/proyecto-db-despachos:latest ./init-db
-        docker push $REGISTRY/proyecto-db-despachos:latest
+        docker build -f ./init-db/Dockerfile.despachos -t $REGISTRY/ep3-db-despachos:latest ./init-db
+        docker push $REGISTRY/ep3-db-despachos:latest
 
-  deploy-db:
-    name: Desplegar Base de Datos vía SSM
-    needs: build-and-push-db
-    runs-on: ubuntu-latest
-    steps:
-    - name: Configurar Credenciales de AWS
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Preparar Parámetros de SSM
+    - name: Configurar Acceso a EKS
       run: |
-        cat <<EOF > parameters.json
-        {
-          "commands": [
-            "sudo mkdir -p /opt/app",
-            "sudo chmod 777 /opt/app",
-            "cd /opt/app",
-            "aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com",
-            "docker-compose down || true",
-            "echo 'version: \"3.8\"' > docker-compose.yml",
-            "echo 'services:' >> docker-compose.yml",
-            "echo '  db-ventas:' >> docker-compose.yml",
-            "echo '    image: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/proyecto-db-ventas:latest' >> docker-compose.yml",
-            "echo '    container_name: db-ventas' >> docker-compose.yml",
-            "echo '    restart: always' >> docker-compose.yml",
-            "echo '    command: [\"--performance_schema=OFF\", \"--skip-name-resolve\"]' >> docker-compose.yml",
-            "echo '    environment:' >> docker-compose.yml",
-            "echo '      MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}' >> docker-compose.yml",
-            "echo '      MYSQL_DATABASE: ventas_db' >> docker-compose.yml",
-            "echo '      MYSQL_USER: ${{ secrets.MYSQL_USER }}' >> docker-compose.yml",
-            "echo '      MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}' >> docker-compose.yml",
-            "echo '      MYSQL_ROOT_HOST: \"%\"' >> docker-compose.yml",
-            "echo '    ports:' >> docker-compose.yml",
-            "echo '      - \"3306:3306\"' >> docker-compose.yml",
-            "echo '    volumes:' >> docker-compose.yml",
-            "echo '      - db_ventas_data:/var/lib/mysql' >> docker-compose.yml",
-            "echo '  db-despachos:' >> docker-compose.yml",
-            "echo '    image: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/proyecto-db-despachos:latest' >> docker-compose.yml",
-            "echo '    container_name: db-despachos' >> docker-compose.yml",
-            "echo '    restart: always' >> docker-compose.yml",
-            "echo '    command: [\"--performance_schema=OFF\", \"--skip-name-resolve\"]' >> docker-compose.yml",
-            "echo '    environment:' >> docker-compose.yml",
-            "echo '      MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}' >> docker-compose.yml",
-            "echo '      MYSQL_DATABASE: despachos_db' >> docker-compose.yml",
-            "echo '      MYSQL_USER: ${{ secrets.MYSQL_USER }}' >> docker-compose.yml",
-            "echo '      MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}' >> docker-compose.yml",
-            "echo '      MYSQL_ROOT_HOST: \"%\"' >> docker-compose.yml",
-            "echo '    ports:' >> docker-compose.yml",
-            "echo '      - \"3307:3306\"' >> docker-compose.yml",
-            "echo '    volumes:' >> docker-compose.yml",
-            "echo '      - db_despachos_data:/var/lib/mysql' >> docker-compose.yml",
-            "echo 'volumes:' >> docker-compose.yml",
-            "echo '  db_ventas_data:' >> docker-compose.yml",
-            "echo '  db_despachos_data:' >> docker-compose.yml",
-            "docker-compose pull && docker-compose up -d",
-            "sleep 30",
-            "docker exec db-ventas mysql -u root -p${{ secrets.MYSQL_ROOT_PASSWORD }} -e \"CREATE USER IF NOT EXISTS 'root'@'10.0.%' IDENTIFIED BY '${{ secrets.MYSQL_ROOT_PASSWORD }}'; GRANT ALL PRIVILEGES ON *.* TO 'root'@'10.0.%' WITH GRANT OPTION; FLUSH PRIVILEGES;\"",
-            "docker exec db-despachos mysql -u root -p${{ secrets.MYSQL_ROOT_PASSWORD }} -e \"CREATE USER IF NOT EXISTS 'root'@'10.0.%' IDENTIFIED BY '${{ secrets.MYSQL_ROOT_PASSWORD }}'; GRANT ALL PRIVILEGES ON *.* TO 'root'@'10.0.%' WITH GRANT OPTION; FLUSH PRIVILEGES;\""
-          ]
-        }
-        EOF
+        aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
-    - name: Ejecutar Comando SSM
+    - name: Desplegar Bases de Datos en EKS
       run: |
-        aws ssm send-command \
-          --instance-ids ${{ secrets.EC2_DB_INSTANCE_ID }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters file://parameters.json
+        kubectl rollout restart deployment/db-ventas
+        kubectl rollout restart deployment/db-despachos

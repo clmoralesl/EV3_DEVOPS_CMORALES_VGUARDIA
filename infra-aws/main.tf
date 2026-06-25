@@ -11,11 +11,32 @@ provider "aws" {
   region = "us-east-1"
 }
 
+data "aws_caller_identity" "current" {}
+
+variable "eks_cluster_role_arn" {
+  type        = string
+  description = "ARN del rol de EKS Cluster (si se requiere usar uno especifico de AWS Academy)"
+  default     = ""
+}
+
+variable "eks_node_role_arn" {
+  type        = string
+  description = "ARN del rol de EKS Nodes (si se requiere usar uno especifico de AWS Academy)"
+  default     = ""
+}
+
+# ==========================================
+# 1. REDES (VPC, Subnets, Gateways, Tablas)
+# ==========================================
+
 resource "aws_vpc" "main" {
   cidr_block           = "10.0.0.0/16"
   enable_dns_hostnames = true
   enable_dns_support   = true
-  tags = { Name = "VPC-Proyecto-EP2" }
+  tags = {
+    Name = "VPC-Proyecto-EKS"
+    "kubernetes.io/cluster/cluster-proyecto-ep3" = "shared"
+  }
 }
 
 resource "aws_internet_gateway" "gw" {
@@ -23,28 +44,76 @@ resource "aws_internet_gateway" "gw" {
   tags   = { Name = "IGW-Proyecto" }
 }
 
-resource "aws_subnet" "public_front" {
+# Subnets Públicas (Con tags requeridos por Kubernetes para ALBs/CLBs públicos)
+resource "aws_subnet" "public_a" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = "10.0.1.0/24"
   availability_zone       = "us-east-1a"
   map_public_ip_on_launch = true
-  tags                    = { Name = "Subnet-Public-Front" }
+  tags = {
+    Name                                         = "Subnet-Public-A"
+    "kubernetes.io/role/elb"                     = "1"
+    "kubernetes.io/cluster/cluster-proyecto-ep3" = "shared"
+  }
 }
 
-resource "aws_subnet" "private_app" {
+resource "aws_subnet" "public_b" {
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = "10.0.4.0/24"
+  availability_zone       = "us-east-1b"
+  map_public_ip_on_launch = true
+  tags = {
+    Name                                         = "Subnet-Public-B"
+    "kubernetes.io/role/elb"                     = "1"
+    "kubernetes.io/cluster/cluster-proyecto-ep3" = "shared"
+  }
+}
+
+# Subnets Privadas para Aplicación (Con tags requeridos por Kubernetes para LBs internos)
+resource "aws_subnet" "private_app_a" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.2.0/24"
   availability_zone = "us-east-1a"
-  tags              = { Name = "Subnet-Private-App" }
+  tags = {
+    Name                                         = "Subnet-Private-App-A"
+    "kubernetes.io/role/internal-elb"            = "1"
+    "kubernetes.io/cluster/cluster-proyecto-ep3" = "shared"
+  }
 }
 
-resource "aws_subnet" "private_db" {
+resource "aws_subnet" "private_app_b" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.5.0/24"
+  availability_zone = "us-east-1b"
+  tags = {
+    Name                                         = "Subnet-Private-App-B"
+    "kubernetes.io/role/internal-elb"            = "1"
+    "kubernetes.io/cluster/cluster-proyecto-ep3" = "shared"
+  }
+}
+
+# Subnets Privadas para Base de Datos
+resource "aws_subnet" "private_db_a" {
   vpc_id            = aws_vpc.main.id
   cidr_block        = "10.0.3.0/24"
   availability_zone = "us-east-1a"
-  tags              = { Name = "Subnet-Private-DB" }
+  tags = {
+    Name                                         = "Subnet-Private-DB-A"
+    "kubernetes.io/cluster/cluster-proyecto-ep3" = "shared"
+  }
 }
 
+resource "aws_subnet" "private_db_b" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = "10.0.6.0/24"
+  availability_zone = "us-east-1b"
+  tags = {
+    Name                                         = "Subnet-Private-DB-B"
+    "kubernetes.io/cluster/cluster-proyecto-ep3" = "shared"
+  }
+}
+
+# NAT Gateway para subredes privadas
 resource "aws_eip" "nat_eip" {
   domain     = "vpc"
   depends_on = [aws_internet_gateway.gw]
@@ -53,10 +122,11 @@ resource "aws_eip" "nat_eip" {
 
 resource "aws_nat_gateway" "nat" {
   allocation_id = aws_eip.nat_eip.id
-  subnet_id     = aws_subnet.public_front.id
+  subnet_id     = aws_subnet.public_a.id
   tags          = { Name = "Main-NAT-Gateway" }
 }
 
+# Tablas de Ruteo
 resource "aws_route_table" "public_rt" {
   vpc_id = aws_vpc.main.id
   route {
@@ -66,8 +136,13 @@ resource "aws_route_table" "public_rt" {
   tags = { Name = "RT-Publica" }
 }
 
-resource "aws_route_table_association" "public_assoc" {
-  subnet_id      = aws_subnet.public_front.id
+resource "aws_route_table_association" "public_assoc_a" {
+  subnet_id      = aws_subnet.public_a.id
+  route_table_id = aws_route_table.public_rt.id
+}
+
+resource "aws_route_table_association" "public_assoc_b" {
+  subnet_id      = aws_subnet.public_b.id
   route_table_id = aws_route_table.public_rt.id
 }
 
@@ -80,247 +155,159 @@ resource "aws_route_table" "private_rt" {
   tags = { Name = "RT-Privada" }
 }
 
-resource "aws_route_table_association" "app_assoc" {
-  subnet_id      = aws_subnet.private_app.id
+resource "aws_route_table_association" "app_assoc_a" {
+  subnet_id      = aws_subnet.private_app_a.id
   route_table_id = aws_route_table.private_rt.id
 }
 
-resource "aws_route_table_association" "db_assoc" {
-  subnet_id      = aws_subnet.private_db.id
+resource "aws_route_table_association" "app_assoc_b" {
+  subnet_id      = aws_subnet.private_app_b.id
   route_table_id = aws_route_table.private_rt.id
 }
 
-data "aws_ami" "amazon_linux_2" {
-  most_recent = true
-  owners      = ["amazon"]
-  filter {
-    name   = "name"
-    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
-  }
+resource "aws_route_table_association" "db_assoc_a" {
+  subnet_id      = aws_subnet.private_db_a.id
+  route_table_id = aws_route_table.private_rt.id
 }
 
-resource "aws_security_group" "sg_frontend" {
-  name   = "sg_frontend"
-  vpc_id = aws_vpc.main.id
-  tags   = { Name = "SG-Frontend" }
+resource "aws_route_table_association" "db_assoc_b" {
+  subnet_id      = aws_subnet.private_db_b.id
+  route_table_id = aws_route_table.private_rt.id
 }
 
-resource "aws_security_group" "sg_backend" {
-  name   = "sg_backend"
-  vpc_id = aws_vpc.main.id
-  tags   = { Name = "SG-Backend" }
-}
-
-resource "aws_security_group" "sg_database" {
-  name   = "sg_database"
-  vpc_id = aws_vpc.main.id
-  tags   = { Name = "SG-Database" }
-}
-
-resource "aws_security_group_rule" "front_http" {
-  type              = "ingress"
-  from_port         = 80
-  to_port           = 80
-  protocol          = "tcp"
-  cidr_blocks       = ["0.0.0.0/0"]
-  security_group_id = aws_security_group.sg_frontend.id
-}
-
-resource "aws_security_group_rule" "front_ssh" {
-  type              = "ingress"
-  from_port         = 22
-  to_port           = 22
-  protocol          = "tcp"
-  cidr_blocks       = ["0.0.0.0/0"]
-  security_group_id = aws_security_group.sg_frontend.id
-}
-
-resource "aws_security_group_rule" "front_icmp_public" {
-  type              = "ingress"
-  from_port         = -1
-  to_port           = -1
-  protocol          = "icmp"
-  cidr_blocks       = ["0.0.0.0/0"]
-  security_group_id = aws_security_group.sg_frontend.id
-}
-
-resource "aws_security_group_rule" "front_icmp_from_back" {
-  type                     = "ingress"
-  from_port                = -1
-  to_port                  = -1
-  protocol                 = "icmp"
-  source_security_group_id = aws_security_group.sg_backend.id
-  security_group_id        = aws_security_group.sg_frontend.id
-}
-
-resource "aws_security_group_rule" "front_egress" {
-  type              = "egress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
-  cidr_blocks       = ["0.0.0.0/0"]
-  security_group_id = aws_security_group.sg_frontend.id
-}
-
-resource "aws_security_group_rule" "back_api" {
-  type                     = "ingress"
-  from_port                = 8080
-  to_port                  = 8081
-  protocol                 = "tcp"
-  source_security_group_id = aws_security_group.sg_frontend.id
-  security_group_id        = aws_security_group.sg_backend.id
-}
-
-resource "aws_security_group_rule" "back_ssh" {
-  type                     = "ingress"
-  from_port                = 22
-  to_port                  = 22
-  protocol                 = "tcp"
-  source_security_group_id = aws_security_group.sg_frontend.id
-  security_group_id        = aws_security_group.sg_backend.id
-}
-
-resource "aws_security_group_rule" "back_icmp_from_front" {
-  type                     = "ingress"
-  from_port                = -1
-  to_port                  = -1
-  protocol                 = "icmp"
-  source_security_group_id = aws_security_group.sg_frontend.id
-  security_group_id        = aws_security_group.sg_backend.id
-}
-
-resource "aws_security_group_rule" "back_icmp_from_db" {
-  type                     = "ingress"
-  from_port                = -1
-  to_port                  = -1
-  protocol                 = "icmp"
-  source_security_group_id = aws_security_group.sg_database.id
-  security_group_id        = aws_security_group.sg_backend.id
-}
-
-resource "aws_security_group_rule" "back_egress" {
-  type              = "egress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
-  cidr_blocks       = ["0.0.0.0/0"]
-  security_group_id = aws_security_group.sg_backend.id
-}
-
-resource "aws_security_group_rule" "db_mysql" {
-  type                     = "ingress"
-  from_port                = 3306
-  to_port                  = 3307
-  protocol                 = "tcp"
-  source_security_group_id = aws_security_group.sg_backend.id
-  security_group_id        = aws_security_group.sg_database.id
-}
-
-resource "aws_security_group_rule" "db_icmp_from_back" {
-  type                     = "ingress"
-  from_port                = -1
-  to_port                  = -1
-  protocol                 = "icmp"
-  source_security_group_id = aws_security_group.sg_backend.id
-  security_group_id        = aws_security_group.sg_database.id
-}
-
-resource "aws_security_group_rule" "db_egress" {
-  type              = "egress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
-  cidr_blocks       = ["0.0.0.0/0"]
-  security_group_id = aws_security_group.sg_database.id
-}
-
-variable "user_data_script" {
-  default = <<-EOF
-              #!/bin/bash
-              sudo yum update -y
-              sudo yum install docker git -y
-              sudo systemctl start docker
-              sudo systemctl enable docker
-              sudo usermod -a -G docker ec2-user
-              sudo curl -L "https://github.com/docker/compose/releases/download/v2.25.0/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-              sudo chmod +x /usr/local/bin/docker-compose
-            EOF
-}
-
-resource "aws_instance" "front_ec2" {
-  ami                    = data.aws_ami.amazon_linux_2.id
-  instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.public_front.id
-  vpc_security_group_ids = [aws_security_group.sg_frontend.id]
-  iam_instance_profile   = "LabInstanceProfile"
-  key_name               = "devops_key_cm_vg"
-  user_data              = var.user_data_script
-  tags                   = { Name = "EC2-Frontend" }
-}
-
-resource "aws_instance" "back_ec2" {
-  ami                    = data.aws_ami.amazon_linux_2.id
-  instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.private_app.id
-  vpc_security_group_ids = [aws_security_group.sg_backend.id]
-  iam_instance_profile   = "LabInstanceProfile"
-  key_name               = "devops_key_cm_vg"
-  user_data              = var.user_data_script
-  tags                   = { Name = "EC2-Backends" }
-}
-
-resource "aws_instance" "db_ec2" {
-  ami                    = data.aws_ami.amazon_linux_2.id
-  instance_type          = "t2.micro"
-  subnet_id              = aws_subnet.private_db.id
-  vpc_security_group_ids = [aws_security_group.sg_database.id]
-  iam_instance_profile   = "LabInstanceProfile"
-  key_name               = "devops_key_cm_vg"
-  user_data              = var.user_data_script
-  tags                   = { Name = "EC2-Databases" }
-}
+# ==========================================
+# 2. REGISTRO DE CONTENEDORES (ECR)
+# ==========================================
 
 resource "aws_ecr_repository" "repo_db_ventas" {
-  name                 = "proyecto-db-ventas"
+  name                 = "ep3-db-ventas"
   image_tag_mutability = "MUTABLE"
   force_delete         = true
-  image_scanning_configuration {
-    scan_on_push = true
-  }
+  image_scanning_configuration { scan_on_push = true }
 }
 
 resource "aws_ecr_repository" "repo_db_despachos" {
-  name                 = "proyecto-db-despachos"
+  name                 = "ep3-db-despachos"
   image_tag_mutability = "MUTABLE"
   force_delete         = true
-  image_scanning_configuration {
-    scan_on_push = true
-  }
+  image_scanning_configuration { scan_on_push = true }
 }
 
 resource "aws_ecr_repository" "repo_front" {
-  name                 = "proyecto-frontend"
+  name                 = "ep3-frontend"
   image_tag_mutability = "MUTABLE"
   force_delete         = true
-  image_scanning_configuration {
-    scan_on_push = true
-  }
+  image_scanning_configuration { scan_on_push = true }
 }
 
 resource "aws_ecr_repository" "repo_back_ventas" {
-  name                 = "proyecto-back-ventas"
+  name                 = "ep3-back-ventas"
   image_tag_mutability = "MUTABLE"
   force_delete         = true
-  image_scanning_configuration {
-    scan_on_push = true
-  }
+  image_scanning_configuration { scan_on_push = true }
 }
 
 resource "aws_ecr_repository" "repo_back_despachos" {
-  name                 = "proyecto-back-despachos"
+  name                 = "ep3-back-despachos"
   image_tag_mutability = "MUTABLE"
   force_delete         = true
-  image_scanning_configuration {
-    scan_on_push = true
+  image_scanning_configuration { scan_on_push = true }
+}
+
+# ==========================================
+# 3. CLÚSTER EKS (ELASTIC KUBERNETES SERVICE)
+# ==========================================
+
+resource "aws_eks_cluster" "main" {
+  name     = "cluster-proyecto-ep3"
+  role_arn = var.eks_cluster_role_arn != "" ? var.eks_cluster_role_arn : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/LabRole"
+
+  vpc_config {
+    subnet_ids = [
+      aws_subnet.public_a.id,
+      aws_subnet.public_b.id,
+      aws_subnet.private_app_a.id,
+      aws_subnet.private_app_b.id
+    ]
+    # No especificamos security_group_ids para que AWS EKS cree y gestione
+    # automáticamente el grupo de seguridad por defecto del clúster (práctica recomendada).
   }
+
+  # Habilitar logs del plano de control en CloudWatch
+  enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+}
+
+# ==========================================
+# 4. GRUPO DE NODOS PARA APLICACIONES (FRONTEND & BACKEND)
+# ==========================================
+
+resource "aws_eks_node_group" "nodos_app" {
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "nodos-app"
+  node_role_arn   = var.eks_node_role_arn != "" ? var.eks_node_role_arn : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/LabRole"
+  subnet_ids      = [aws_subnet.private_app_a.id, aws_subnet.private_app_b.id]
+
+  scaling_config {
+    desired_size = 2
+    max_size     = 3
+    min_size     = 1
+  }
+
+  instance_types = ["t3.medium"]
+  ami_type       = "AL2_x86_64"
+
+  labels = {
+    role = "app"
+  }
+
+  depends_on = [
+    aws_eks_cluster.main
+  ]
+}
+
+# ==========================================
+# 5. GRUPO DE NODOS PARA BASES DE DATOS (MYSQL)
+# ==========================================
+
+resource "aws_eks_node_group" "nodos_db" {
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "nodos-db"
+  node_role_arn   = var.eks_node_role_arn != "" ? var.eks_node_role_arn : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/LabRole"
+  subnet_ids      = [aws_subnet.private_app_a.id, aws_subnet.private_app_b.id]
+
+  scaling_config {
+    desired_size = 1
+    max_size     = 2
+    min_size     = 1
+  }
+
+  instance_types = ["t3.medium"]
+  ami_type       = "AL2_x86_64"
+
+  labels = {
+    role = "db"
+  }
+
+  depends_on = [
+    aws_eks_cluster.main
+  ]
+}
+
+# ==========================================
+# SALIDAS (OUTPUTS)
+# ==========================================
+
+output "cluster_name" {
+  value       = aws_eks_cluster.main.name
+  description = "Nombre del cluster EKS"
+}
+
+output "cluster_endpoint" {
+  value       = aws_eks_cluster.main.endpoint
+  description = "Endpoint del API Server del cluster EKS"
+}
+
+output "update_kubeconfig_command" {
+  value       = "aws eks update-kubeconfig --name ${aws_eks_cluster.main.name} --region us-east-1"
+  description = "Comando para configurar kubectl de forma local"
 }

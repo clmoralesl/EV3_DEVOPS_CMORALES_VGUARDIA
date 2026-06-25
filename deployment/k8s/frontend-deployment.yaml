@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: front-despacho
+  labels:
+    app: front-despacho
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: front-despacho
+  template:
+    metadata:
+      labels:
+        app: front-despacho
+    spec:
+      nodeSelector:
+        role: app
+      containers:
+      - name: front-despacho
+        image: 066442453610.dkr.ecr.us-east-1.amazonaws.com/ep3-frontend:latest
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "250m"
+            memory: "512Mi"

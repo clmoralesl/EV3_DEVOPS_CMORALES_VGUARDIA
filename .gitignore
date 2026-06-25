@@ -34,3 +34,7 @@ db.json
 
 # --- Logs ---
 logs/
+
+# --- Academic Guides & PDFs ---
+guia_ep3.md
+*.pdf

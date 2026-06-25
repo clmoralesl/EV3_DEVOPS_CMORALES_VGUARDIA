@@ -6,17 +6,16 @@ on:
     paths:
       - "back-Ventas_SpringBoot/**"
       - "back-Despachos_SpringBoot/**"
-      - "deployment/docker-compose.back.yml"
       - ".github/workflows/deploy-backend.yml"
   workflow_dispatch:
 
 env:
   AWS_REGION: us-east-1
-  AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+  CLUSTER_NAME: cluster-proyecto-ep3
 
 jobs:
-  build-and-push:
-    name: Construir y Subir Backends a ECR
+  build-push-deploy:
+    name: Construir, Subir y Desplegar Backends en EKS
     runs-on: ubuntu-latest
     steps:
     - name: Descargar Código
@@ -37,68 +36,20 @@ jobs:
     - name: Construir y Subir Imágenes
       run: |
         REGISTRY=${{ steps.login-ecr.outputs.registry }}
-        docker build -t $REGISTRY/proyecto-back-ventas:latest ./back-Ventas_SpringBoot/Springboot-API-REST
-        docker push $REGISTRY/proyecto-back-ventas:latest
-        docker build -t $REGISTRY/proyecto-back-despachos:latest ./back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
-        docker push $REGISTRY/proyecto-back-despachos:latest
+        
+        # Build y Push Ventas
+        docker build -t $REGISTRY/ep3-back-ventas:latest ./back-Ventas_SpringBoot/Springboot-API-REST
+        docker push $REGISTRY/ep3-back-ventas:latest
+        
+        # Build y Push Despachos
+        docker build -t $REGISTRY/ep3-back-despachos:latest ./back-Despachos_SpringBoot/Springboot-API-REST-DESPACHO
+        docker push $REGISTRY/ep3-back-despachos:latest
 
-  deploy:
-    name: Desplegar Backends vía SSM
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    steps:
-    - name: Configurar Credenciales de AWS
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-        aws-region: ${{ env.AWS_REGION }}
-
-    - name: Preparar Parámetros de SSM
+    - name: Configurar Acceso a EKS
       run: |
-        cat <<EOF > parameters.json
-        {
-          "commands": [
-            "sudo mkdir -p /opt/app",
-            "sudo chmod 777 /opt/app",
-            "cd /opt/app",
-            "aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com",
-            "docker-compose down || true",
-            "echo 'version: \"3.8\"' > docker-compose.yml",
-            "echo 'services:' >> docker-compose.yml",
-            "echo '  back-ventas:' >> docker-compose.yml",
-            "echo '    image: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/proyecto-back-ventas:latest' >> docker-compose.yml",
-            "echo '    container_name: back-ventas' >> docker-compose.yml",
-            "echo '    restart: always' >> docker-compose.yml",
-            "echo '    ports:' >> docker-compose.yml",
-            "echo '      - \"8080:8080\"' >> docker-compose.yml",
-            "echo '    environment:' >> docker-compose.yml",
-            "echo '      - DB_ENDPOINT=${{ secrets.DB_PRIVATE_IP }}' >> docker-compose.yml",
-            "echo '      - DB_PORT=3306' >> docker-compose.yml",
-            "echo '      - DB_NAME=ventas_db' >> docker-compose.yml",
-            "echo '      - DB_USERNAME=${{ secrets.MYSQL_USER }}' >> docker-compose.yml",
-            "echo '      - DB_PASSWORD=${{ secrets.MYSQL_PASSWORD }}' >> docker-compose.yml",
-            "echo '  back-despachos:' >> docker-compose.yml",
-            "echo '    image: ${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/proyecto-back-despachos:latest' >> docker-compose.yml",
-            "echo '    container_name: back-despachos' >> docker-compose.yml",
-            "echo '    restart: always' >> docker-compose.yml",
-            "echo '    ports:' >> docker-compose.yml",
-            "echo '      - \"8081:8081\"' >> docker-compose.yml",
-            "echo '    environment:' >> docker-compose.yml",
-            "echo '      - DB_ENDPOINT=${{ secrets.DB_PRIVATE_IP }}' >> docker-compose.yml",
-            "echo '      - DB_PORT=3307' >> docker-compose.yml",
-            "echo '      - DB_NAME=despachos_db' >> docker-compose.yml",
-            "echo '      - DB_USERNAME=${{ secrets.MYSQL_USER }}' >> docker-compose.yml",
-            "echo '      - DB_PASSWORD=${{ secrets.MYSQL_PASSWORD }}' >> docker-compose.yml",
-            "docker-compose pull && docker-compose up -d"
-          ]
-        }
-        EOF
+        aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
 
-    - name: Ejecutar Comando SSM
+    - name: Desplegar Backends en EKS
       run: |
-        aws ssm send-command \
-          --instance-ids ${{ secrets.EC2_BACK_INSTANCE_ID }} \
-          --document-name "AWS-RunShellScript" \
-          --parameters file://parameters.json
+        kubectl rollout restart deployment/back-ventas
+        kubectl rollout restart deployment/back-despachos

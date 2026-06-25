@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db-ventas
+  labels:
+    app: db-ventas
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: db-ventas
+  template:
+    metadata:
+      labels:
+        app: db-ventas
+    spec:
+      nodeSelector:
+        role: db
+      containers:
+      - name: db-ventas
+        image: 066442453610.dkr.ecr.us-east-1.amazonaws.com/ep3-db-ventas:latest
+        ports:
+        - containerPort: 3306
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: "myrootpassword"
+        - name: MYSQL_DATABASE
+          value: "ventas_db"
+        - name: MYSQL_USER
+          value: "myuser"
+        - name: MYSQL_PASSWORD
+          value: "mypassword"
+        - name: MYSQL_ROOT_HOST
+          value: "%"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "250m"
+            memory: "512Mi"

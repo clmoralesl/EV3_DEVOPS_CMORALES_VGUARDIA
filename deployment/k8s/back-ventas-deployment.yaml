@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: back-ventas
+  labels:
+    app: back-ventas
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: back-ventas
+  template:
+    metadata:
+      labels:
+        app: back-ventas
+    spec:
+      nodeSelector:
+        role: app
+      containers:
+      - name: back-ventas
+        image: 066442453610.dkr.ecr.us-east-1.amazonaws.com/ep3-back-ventas:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DB_ENDPOINT
+          value: "db-ventas"
+        - name: DB_PORT
+          value: "3306"
+        - name: DB_NAME
+          value: "ventas_db"
+        - name: DB_USERNAME
+          value: "myuser"
+        - name: DB_PASSWORD
+          value: "mypassword"
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "250m"
+            memory: "512Mi"
